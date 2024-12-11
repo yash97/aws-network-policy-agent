@@ -69,6 +69,8 @@ struct data_t {
 	__u32  dest_port;
 	__u32  protocol;
 	__u32  verdict;
+	__u32 packet_sz;
+	__u8 is_egress;
 };
 
 struct bpf_map_def_pvt SEC("maps") ingress_map = {
@@ -202,24 +204,32 @@ int handle_ingress(struct __sk_buff *skb)
 		}
 
 		trie_key.prefix_len = 128;
-		//Fill the IP Key to be used for lookup
-		for (int i=0; i<16; i++){
-			trie_key.ip[i] = ip->saddr.in6_u.u6_addr8[i];
-		}
-		
-		//Check for the an existing flow in the conntrack table
-		flow_key.saddr = ip->saddr;
-		flow_key.daddr = ip->daddr;
-		flow_key.src_port = l4_src_port;
-		flow_key.dest_port = l4_dst_port;
-		flow_key.protocol = ip->nexthdr;
-		flow_key.owner_addr = ip->daddr;
+        //Fill the IP Key to be used for lookup
+        for (int i=0; i<16; i++){
+             trie_key.ip[i] = ip->saddr.in6_u.u6_addr8[i];
+        }
+	
+	//Check for the an existing flow in the conntrack table
+	flow_key.saddr = ip->saddr;
+	flow_key.daddr = ip->daddr;
+	flow_key.src_port = l4_src_port;
+	flow_key.dest_port = l4_dst_port;
+	flow_key.protocol = ip->nexthdr;
+	flow_key.owner_addr = ip->daddr;
+
+	//Check if it's an existing flow
+	flow_val = (struct conntrack_value *)bpf_map_lookup_elem(&aws_conntrack_map, &flow_key);
+	if (flow_val != NULL) { 
+		return BPF_OK;	
+	}
 
 		evt.src_ip = ip->saddr;
 		evt.dest_ip = ip->daddr;
 		evt.src_port = flow_key.src_port;
 		evt.dest_port = flow_key.dest_port;
 		evt.protocol = flow_key.protocol;
+	evt.packet_sz = skb->len;
+	evt.is_egress = 0;
 
 		__u32 key = 0; 
 		struct pod_state *pst = bpf_map_lookup_elem(&ingress_pod_state_map, &key);
