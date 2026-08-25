@@ -17,3 +17,6 @@ through manual dispatch. It builds the default-branch image, creates one cluster
 for every selected kernel and IP family, verifies the AMI and exact kernel on
 all nodes, runs the existing Cyclonus suites, and deletes the clusters in
 separate retrying cleanup jobs.
+
+Both the PR bot and nightly workflow use `scripts/cyclonus-cluster.sh` for
+cluster creation, addon/image setup, verification, and retrying deletion.

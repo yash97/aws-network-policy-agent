@@ -89,69 +89,15 @@ jobs:
           echo "CLUSTER_NAME=npa-nightly-k${KERNEL_LINE//./-}-${IP_FAMILY,,}-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
 
       - name: Create cluster
-        run: |
-          cat >/tmp/cluster.yaml <<EOF
-          apiVersion: eksctl.io/v1alpha5
-          kind: ClusterConfig
-          metadata:
-            name: ${CLUSTER_NAME}
-            region: ${REGION}
-            version: "${K8S_VERSION}"
-          iam:
-            withOIDC: true
-          kubernetesNetworkConfig:
-            ipFamily: ${IP_FAMILY}
-          autoModeConfig:
-            enabled: false
-          addons:
-            - name: vpc-cni
-            - name: coredns
-            - name: kube-proxy
-          managedNodeGroups:
-            - name: ${CLUSTER_NAME}-ng
-              amiFamily: AmazonLinux2023
-              ami: ${AMI_ID}
-              instanceType: ${INSTANCE_TYPE}
-              desiredCapacity: 3
-              minSize: 1
-              maxSize: 3
-          EOF
-          eksctl create cluster -f /tmp/cluster.yaml
-          mkdir -p "$(dirname "$KUBECONFIG")"
-          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" --kubeconfig "$KUBECONFIG"
+        run: ./scripts/cyclonus-cluster.sh create
 
       - name: Verify nodes
-        run: |
-          nodes=$(kubectl get nodes -o json)
-          mapfile -t instances < <(jq -r '.items[].spec.providerID | split("/")[-1]' <<<"$nodes")
-          [[ ${#instances[@]} -gt 0 ]]
-
-          amis=$(aws ec2 describe-instances --instance-ids "${instances[@]}" --region "$REGION" \
-            | jq -c '[.Reservations[].Instances[].ImageId] | unique')
-          [[ $(jq length <<<"$amis") -eq 1 && $(jq -r '.[0]' <<<"$amis") == "$AMI_ID" ]]
-
-          bad=$(jq -r --arg expected "$KERNEL_VERSION" '
-            .items[] | .status.nodeInfo.kernelVersion as $actual
-            | select(($actual | sub("\\.x86_64$"; "")) != $expected)
-            | "\(.metadata.name)=\($actual)"' <<<"$nodes")
-          [[ -z "$bad" ]] || { echo "Unexpected node kernels: $bad" >&2; exit 1; }
+        run: ./scripts/cyclonus-cluster.sh verify
 
       - name: Install addon and test image
-        run: |
-          cat >/tmp/addon.yaml <<EOF
-          apiVersion: eksctl.io/v1alpha5
-          kind: ClusterConfig
-          metadata: {name: ${CLUSTER_NAME}, region: ${REGION}}
-          addons:
-            - name: vpc-cni
-              version: latest
-              configurationValues: '{"enableNetworkPolicy":"true"}'
-              resolveConflicts: overwrite
-          EOF
-          eksctl update addon -f /tmp/addon.yaml --force
-          kubectl set image daemonset/aws-node -n kube-system \
-            aws-eks-nodeagent=${{ needs.build.outputs.image }}
-          kubectl rollout status daemonset/aws-node -n kube-system --timeout=300s
+        env:
+          NODE_AGENT_IMAGE: ${{ needs.build.outputs.image }}
+        run: ./scripts/cyclonus-cluster.sh install
 
       - name: Run Cyclonus suites
         env:
@@ -185,12 +131,5 @@ jobs:
           role-duration-seconds: 7200
       - name: Delete cluster
         run: |
-          name=npa-nightly-k${KERNEL_LINE//./-}-${IP_FAMILY,,}-${GITHUB_RUN_ID}
-          for attempt in 1 2 3; do
-            eksctl delete cluster --name "$name" --region "$REGION" --disable-nodegroup-eviction && exit 0
-            out=$(aws eks describe-cluster --name "$name" --region "$REGION" 2>&1) || true
-            grep -q ResourceNotFoundException <<<"$out" && exit 0
-            [[ $attempt -eq 3 ]] || sleep 30
-          done
-          echo "failed to delete $name" >&2
-          exit 1
+          export CLUSTER_NAME=npa-nightly-k${KERNEL_LINE//./-}-${IP_FAMILY,,}-${GITHUB_RUN_ID}
+          ./scripts/cyclonus-cluster.sh delete
