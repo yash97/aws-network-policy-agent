@@ -1,0 +1,311 @@
+name: Nightly AL2023 Kernel Cyclonus Tests
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 07:00 UTC keeps this separate from the existing midnight conformance run.
+    - cron: "0 7 * * *"
+
+permissions:
+  id-token: write
+  contents: read
+
+# Never cancel a run that may own EKS clusters. A later nightly run waits so
+# cleanup from the active run can finish instead of leaking infrastructure.
+concurrency:
+  group: nightly-al2023-kernel-cyclonus
+  cancel-in-progress: false
+
+env:
+  REGION: us-west-2
+  INSTANCE_TYPE: t3.large
+
+jobs:
+  discover-matrix:
+    if: github.repository == 'aws/aws-network-policy-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+    steps:
+      # Scheduled workflows execute from the default branch. Pin explicit
+      # checkout behavior for workflow_dispatch as well.
+      - uses: actions/checkout@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: aws-actions/configure-aws-credentials@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          role-duration-seconds: 3600
+
+      - name: Discover supported AL2023 kernel matrix
+        id: discover
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EKS_SUPPORT_STATUSES: STANDARD_SUPPORT,EXTENDED_SUPPORT
+        run: |
+          OUTPUT_FORMAT=json \
+          OUTPUT_FILE=/tmp/eks-kernel-matrix.json \
+          ./scripts/smoke/eks-kernel-matrix/run.sh >/dev/null
+
+          matrix=$(jq -c . /tmp/eks-kernel-matrix.json)
+          if [ "$(jq 'length' <<<"$matrix")" -eq 0 ]; then
+            echo "Kernel matrix is empty" >&2
+            exit 1
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Selected AL2023 kernel matrix"
+            echo
+            echo '| Kernel | Kubernetes | Support | AMI | Kernel package |'
+            echo '|---|---|---|---|---|'
+            jq -r '.[] | "| \(.kernel_line) | \(.kubernetes_version) | \(.support_status) | `\(.image_id)` | `\(.kernel_version)` |"' \
+              /tmp/eks-kernel-matrix.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-image:
+    if: github.repository == 'aws/aws-network-policy-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      image: ${{ steps.build.outputs.image_uri }}
+    steps:
+      - uses: actions/checkout@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: aws-actions/configure-aws-credentials@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          role-duration-seconds: 3600
+
+      - name: Build and push default-branch image
+        id: build
+        uses: ./.github/actions/build-and-push-image
+        with:
+          aws-region: ${{ env.REGION }}
+
+  # Each kernel candidate is tested independently on IPv4 and IPv6. Reuse the
+  # cluster/addon/test flow from the Cyclonus PR bot, but pin the discovered
+  # AL2023 AMI so the runtime kernel is deterministic.
+  cyclonus:
+    needs: [discover-matrix, build-image]
+    if: github.repository == 'aws/aws-network-policy-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: ${{ fromJSON(needs.discover-matrix.outputs.matrix || '[]') }}
+        ip-family: [IPv4, IPv6]
+    env:
+      IP_FAMILY: ${{ matrix.ip-family }}
+      K8S_VERSION: ${{ matrix.candidate.kubernetes_version }}
+      KERNEL_LINE: ${{ matrix.candidate.kernel_line }}
+      EXPECTED_KERNEL_VERSION: ${{ matrix.candidate.kernel_version }}
+      AMI_ID: ${{ matrix.candidate.image_id }}
+      KUBECONFIG: ${{ github.workspace }}/.kube/config
+    steps:
+      - uses: actions/checkout@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: ./.github/actions/install-dependencies
+
+      - uses: aws-actions/configure-aws-credentials@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          role-duration-seconds: 21600
+
+      - name: Set cluster name
+        run: |
+          source ./scripts/smoke/eks-kernel-matrix/cluster-name.sh
+          CLUSTER_NAME=$(nightly_kernel_cluster_name \
+            "$KERNEL_LINE" "$IP_FAMILY" "$GITHUB_RUN_ID")
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> "$GITHUB_ENV"
+
+      - name: Create pinned EKS cluster
+        run: |
+          cat > /tmp/cluster-config.yaml <<EOF
+          apiVersion: eksctl.io/v1alpha5
+          kind: ClusterConfig
+          metadata:
+            name: ${CLUSTER_NAME}
+            region: ${REGION}
+            version: "${K8S_VERSION}"
+          iam:
+            withOIDC: true
+          kubernetesNetworkConfig:
+            ipFamily: ${IP_FAMILY}
+          autoModeConfig:
+            enabled: false
+          addons:
+            - name: vpc-cni
+            - name: coredns
+            - name: kube-proxy
+          managedNodeGroups:
+            - name: ${CLUSTER_NAME}-ng
+              amiFamily: AmazonLinux2023
+              ami: ${AMI_ID}
+              instanceType: ${INSTANCE_TYPE}
+              desiredCapacity: 3
+              minSize: 1
+              maxSize: 3
+          EOF
+
+          eksctl create cluster -f /tmp/cluster-config.yaml
+
+      - name: Update kubeconfig
+        run: |
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          aws eks update-kubeconfig \
+            --name "$CLUSTER_NAME" \
+            --region "$REGION" \
+            --kubeconfig "$KUBECONFIG"
+
+      - name: Verify selected AMI and kernel
+        run: |
+          nodes_json=$(kubectl get nodes -o json)
+          mapfile -t instance_ids < <(
+            jq -r '.items[].spec.providerID | split("/")[-1]' <<<"$nodes_json"
+          )
+          mapfile -t observed_kernels < <(
+            jq -r '.items[].status.nodeInfo.kernelVersion' <<<"$nodes_json"
+          )
+          if [ "${#instance_ids[@]}" -eq 0 ]; then
+            echo "No worker-node instance IDs were discovered" >&2
+            exit 1
+          fi
+          if [ "${#observed_kernels[@]}" -ne "${#instance_ids[@]}" ]; then
+            echo "Kernel-version count does not match worker-node count" >&2
+            exit 1
+          fi
+
+          mapfile -t actual_amis < <(
+            aws ec2 describe-instances \
+              --instance-ids "${instance_ids[@]}" \
+              --region "$REGION" \
+              | jq -r '[.Reservations[].Instances[].ImageId] | unique[]'
+          )
+          if [ "${#actual_amis[@]}" -ne 1 ] || [ "${actual_amis[0]}" != "$AMI_ID" ]; then
+            echo "Expected AMI $AMI_ID, found: ${actual_amis[*]}" >&2
+            exit 1
+          fi
+
+          source ./scripts/smoke/eks-kernel-matrix/kernel-verification.sh
+          verify_node_kernel_versions \
+            "$EXPECTED_KERNEL_VERSION" "${observed_kernels[@]}"
+
+          observed_kernel_summary=$(printf '%s\n' "${observed_kernels[@]}" \
+            | sort -u | paste -sd ',' -)
+          {
+            echo "## Runtime verification"
+            echo "- Cluster: \`$CLUSTER_NAME\`"
+            echo "- IP family: \`$IP_FAMILY\`"
+            echo "- Kubernetes: \`$K8S_VERSION\`"
+            echo "- AMI: \`$AMI_ID\`"
+            echo "- Expected package: \`$EXPECTED_KERNEL_VERSION\`"
+            echo "- Observed kernels: \`$observed_kernel_summary\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install addon and default-branch node-agent image
+        run: |
+          cat > /tmp/addon-config.yaml <<EOF
+          apiVersion: eksctl.io/v1alpha5
+          kind: ClusterConfig
+          metadata:
+            name: ${CLUSTER_NAME}
+            region: ${REGION}
+          addons:
+          - name: vpc-cni
+            version: latest
+            configurationValues: '{"enableNetworkPolicy": "true"}'
+            resolveConflicts: overwrite
+          EOF
+          eksctl update addon -f /tmp/addon-config.yaml --force
+
+          kubectl set image daemonset/aws-node \
+            -n kube-system \
+            aws-eks-nodeagent=${{ needs.build-image.outputs.image }}
+          kubectl rollout status daemonset/aws-node -n kube-system --timeout=300s
+
+      - name: Run Cyclonus and integration suites
+        env:
+          ENABLE_STRICT_MODE: "true"
+          RUN_EBPF_TESTS: "true"
+          RUN_CLUSTER_NETWORK_POLICY_TESTS: "true"
+        run: SKIP_ADDON_INSTALLATION=true ./scripts/run-cyclonus-tests.sh
+
+  # Keep cleanup in separate jobs, as in the PR bot. It still runs after a
+  # matrix leg fails or times out and retries real delete failures.
+  cleanup:
+    needs: [discover-matrix, build-image, cyclonus]
+    if: |
+      always() &&
+      github.repository == 'aws/aws-network-policy-agent' &&
+      needs.discover-matrix.result == 'success' &&
+      needs.cyclonus.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        candidate: ${{ fromJSON(needs.discover-matrix.outputs.matrix || '[]') }}
+        ip-family: [IPv4, IPv6]
+    env:
+      IP_FAMILY: ${{ matrix.ip-family }}
+      KERNEL_LINE: ${{ matrix.candidate.kernel_line }}
+    steps:
+      - uses: actions/checkout@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: ./.github/actions/install-dependencies
+
+      - uses: aws-actions/configure-aws-credentials@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
+          aws-region: ${{ env.REGION }}
+          role-duration-seconds: 7200
+
+      - name: Set cluster name
+        run: |
+          source ./scripts/smoke/eks-kernel-matrix/cluster-name.sh
+          CLUSTER_NAME=$(nightly_kernel_cluster_name \
+            "$KERNEL_LINE" "$IP_FAMILY" "$GITHUB_RUN_ID")
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> "$GITHUB_ENV"
+
+      - name: Delete EKS cluster
+        run: |
+          for attempt in 1 2 3; do
+            if eksctl delete cluster \
+              --name "$CLUSTER_NAME" \
+              --region "$REGION" \
+              --disable-nodegroup-eviction; then
+              echo "cluster deleted"
+              exit 0
+            fi
+
+            if ! out=$(aws eks describe-cluster \
+              --name "$CLUSTER_NAME" \
+              --region "$REGION" 2>&1); then
+              if grep -q "ResourceNotFoundException" <<<"$out"; then
+                echo "cluster $CLUSTER_NAME not found - treating as deleted"
+                exit 0
+              fi
+              echo "describe-cluster error (not a not-found, will retry): $out"
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "delete attempt $attempt failed; retrying in 30s..."
+              sleep 30
+            fi
+          done
+
+          echo "ERROR: cluster $CLUSTER_NAME still exists after 3 delete attempts" >&2
+          exit 1
