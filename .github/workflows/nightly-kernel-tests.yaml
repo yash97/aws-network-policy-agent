@@ -1,4 +1,4 @@
-name: Nightly AL2023 Kernel Cyclonus Tests
+name: Nightly AL2023 Kernel Tests
 
 on:
   workflow_dispatch: {}
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightly-al2023-kernel-cyclonus
+  group: nightly-al2023-kernel-tests
   cancel-in-progress: false
 
 env:
@@ -60,7 +60,8 @@ jobs:
     needs: [discover, build]
     if: github.repository == 'aws/aws-network-policy-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    # Cluster create (~25m) + test binaries + two 15m suites + cleanup check.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -82,7 +83,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
           aws-region: ${{ env.REGION }}
-          role-duration-seconds: 21600
+          role-duration-seconds: 10800
 
       - name: Set cluster name
         run: |
@@ -99,12 +100,8 @@ jobs:
           NODE_AGENT_IMAGE: ${{ needs.build.outputs.image }}
         run: ./scripts/cyclonus-cluster.sh install
 
-      - name: Run Cyclonus suites
-        env:
-          ENABLE_STRICT_MODE: "true"
-          RUN_EBPF_TESTS: "true"
-          RUN_CLUSTER_NETWORK_POLICY_TESTS: "true"
-        run: SKIP_ADDON_INSTALLATION=true ./scripts/run-cyclonus-tests.sh
+      - name: Run kernel smoke tests
+        run: ./scripts/run-kernel-smoke-tests.sh
 
   cleanup:
     needs: [discover, build, test]
