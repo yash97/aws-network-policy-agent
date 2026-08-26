@@ -17,7 +17,7 @@ create_cluster() {
     local ami=""
     [[ -z "${AMI_ID:-}" ]] || ami="    ami: ${AMI_ID}"
 
-    cat >/tmp/cyclonus-cluster.yaml <<EOF
+    cat >/tmp/eks-test-cluster.yaml <<EOF
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 metadata:
@@ -44,7 +44,7 @@ ${ami}
     maxSize: ${NODES_CAPACITY}
 EOF
 
-    eksctl create cluster -f /tmp/cyclonus-cluster.yaml
+    eksctl create cluster -f /tmp/eks-test-cluster.yaml
     mkdir -p "$(dirname "$KUBECONFIG")"
     aws eks update-kubeconfig \
         --name "$CLUSTER_NAME" --region "$REGION" --kubeconfig "$KUBECONFIG"
@@ -74,7 +74,7 @@ verify_nodes() {
 
 install_agent() {
     require CLUSTER_NAME NODE_AGENT_IMAGE
-    cat >/tmp/cyclonus-addon.yaml <<EOF
+    cat >/tmp/eks-test-addon.yaml <<EOF
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 metadata: {name: ${CLUSTER_NAME}, region: ${REGION}}
@@ -84,7 +84,7 @@ addons:
     configurationValues: '{"enableNetworkPolicy":"true"}'
     resolveConflicts: overwrite
 EOF
-    eksctl update addon -f /tmp/cyclonus-addon.yaml --force
+    eksctl update addon -f /tmp/eks-test-addon.yaml --force
     kubectl set image daemonset/aws-node -n kube-system aws-eks-nodeagent="$NODE_AGENT_IMAGE"
     kubectl rollout status daemonset/aws-node -n kube-system --timeout=300s
 }

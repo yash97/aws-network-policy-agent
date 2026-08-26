@@ -26,5 +26,5 @@ already runs nightly in `e2e-conformance.yaml` and per change in the PR bot, so
 it is intentionally not repeated per kernel. Clusters are deleted in separate
 retrying cleanup jobs.
 
-Both the PR bot and nightly workflow use `scripts/cyclonus-cluster.sh` for
+Both the PR bot and nightly workflow use `scripts/eks-test-cluster.sh` for
 cluster creation, addon/image setup, verification, and retrying deletion.
