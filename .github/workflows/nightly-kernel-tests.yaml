@@ -125,7 +125,14 @@ jobs:
       - uses: actions/checkout@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
-      - uses: ./.github/actions/install-dependencies
+      # Deletion needs only eksctl (aws CLI is preinstalled on runners).
+      # Deliberately not the install-dependencies composite: this job is the
+      # only independent deletion path for a failed leg, and a transient
+      # Go/Ginkgo setup failure must not leave the cluster running.
+      - name: Install eksctl
+        run: |
+          curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin/
       - uses: aws-actions/configure-aws-credentials@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           role-to-assume: ${{ secrets.OSS_ROLE_ARN }}

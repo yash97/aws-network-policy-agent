@@ -10,6 +10,10 @@ cat >"$tmp/bin/aws" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1 $2" == "eks describe-cluster-versions" ]]; then
+    # Extended-support versions must not depend on the API's default
+    # filtering: require the explicit --include-all flag.
+    [[ " $* " == *" --include-all "* ]] \
+        || { echo "describe-cluster-versions called without --include-all" >&2; exit 1; }
     cat <<'JSON'
 {"clusterVersions":[
  {"clusterVersion":"1.36","versionStatus":"STANDARD_SUPPORT"},

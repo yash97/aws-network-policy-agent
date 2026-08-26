@@ -65,7 +65,9 @@ kernel_from_release() {
     ' "$file"
 }
 
-versions_json=$(aws eks describe-cluster-versions --region "$REGION" --output json)
+# --include-all returns every version regardless of the API's default
+# filtering; the status filter below keeps only supported ones.
+versions_json=$(aws eks describe-cluster-versions --region "$REGION" --include-all --output json)
 mapfile -t versions < <(jq -r '
     [.clusterVersions[]
      | ((.versionStatus // .status) | ascii_upcase | gsub("-"; "_")) as $status

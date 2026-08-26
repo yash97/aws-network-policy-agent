@@ -132,6 +132,16 @@ jobs:
         with:
           ref: ${{ needs.check-trigger.outputs.pr-sha }}
 
+      # PRs opened before the lifecycle script merged check out a head that
+      # predates it; fall back to the default-branch copy so /test cyclonus
+      # keeps working on them without a rebase.
+      - name: Ensure cluster lifecycle script
+        run: |
+          if [[ ! -f scripts/cyclonus-cluster.sh ]]; then
+            git fetch --depth=1 origin "${{ github.event.repository.default_branch }}"
+            git checkout FETCH_HEAD -- scripts/cyclonus-cluster.sh
+          fi
+
       - uses: ./.github/actions/install-dependencies
 
       - uses: aws-actions/configure-aws-credentials@v4
@@ -200,11 +210,27 @@ jobs:
     env:
       CLUSTER_NAME: cyclonus-pr-${{ github.event.issue.number }}-${{ matrix.ip-family }}
     steps:
+      # The PR head has the script while this change is itself in review;
+      # the fallback covers older PRs whose head predates it.
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.check-trigger.outputs.pr-sha }}
 
-      - uses: ./.github/actions/install-dependencies
+      - name: Ensure cluster lifecycle script
+        run: |
+          if [[ ! -f scripts/cyclonus-cluster.sh ]]; then
+            git fetch --depth=1 origin "${{ github.event.repository.default_branch }}"
+            git checkout FETCH_HEAD -- scripts/cyclonus-cluster.sh
+          fi
+
+      # Deletion needs only eksctl (aws CLI is preinstalled on runners).
+      # Deliberately not the install-dependencies composite: cleanup is the
+      # only independent deletion path, and a transient Go/Ginkgo setup
+      # failure must not leave the cluster running.
+      - name: Install eksctl
+        run: |
+          curl -fsSL "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin/
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
