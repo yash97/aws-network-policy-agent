@@ -17,12 +17,19 @@ for cmd in aws curl jq awk; do
 done
 
 fetch_release_body() {
-    local tag="$1"
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$RELEASE_URL/$tag"
-    else
-        curl -fsSL "$RELEASE_URL/$tag"
-    fi | jq -er .body
+    local tag="$1" response message
+    # args is never empty so the expansion is safe under set -u on bash < 4.4.
+    local -a args=(-sSL -H "Accept: application/vnd.github+json")
+    [[ -z "${GITHUB_TOKEN:-}" ]] || args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    # No curl -f: on 403/404 GitHub returns a JSON error we want to surface.
+    response=$(curl "${args[@]}" "$RELEASE_URL/$tag") || {
+        echo "failed to fetch release $tag" >&2; return 1
+    }
+    jq -er '.body | select(type == "string" and length > 0)' <<<"$response" || {
+        message=$(jq -r '.message // empty' <<<"$response" 2>/dev/null || true)
+        echo "unexpected API response for $tag: ${message:-${response:0:200}}" >&2
+        return 1
+    }
 }
 
 kernel_from_release() {

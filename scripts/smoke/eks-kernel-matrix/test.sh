@@ -36,8 +36,33 @@ chmod +x "$tmp/bin/aws"
 cat >"$tmp/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-# Mock of the GitHub Releases API: emits {"body": "<release notes markup>"}
-# on stdout, as consumed by fetch_release_body. All arguments are ignored.
+# Mock of the GitHub Releases API. Validates the request contract (URL,
+# Accept header, Authorization presence tracking MOCK_EXPECT_AUTH), then
+# emits {"body": "<release notes markup>"} like the real API.
+url="" accept="" auth=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -H) case "$2" in
+                Accept:*) accept="$2" ;;
+                Authorization:*) auth="$2" ;;
+            esac; shift 2 ;;
+        -*) shift ;;
+        *) url="$1"; shift ;;
+    esac
+done
+[[ "$url" == "https://api.github.com/repos/awslabs/amazon-eks-ami/releases/tags/v20260818" ]] \
+    || { echo "unexpected URL: $url" >&2; exit 1; }
+[[ -n "$accept" ]] || { echo "missing Accept header" >&2; exit 1; }
+if [[ "${MOCK_EXPECT_AUTH:-}" == "1" ]]; then
+    [[ "$auth" == "Authorization: Bearer test-token" ]] \
+        || { echo "expected Authorization header, got: $auth" >&2; exit 1; }
+else
+    [[ -z "$auth" ]] || { echo "unexpected Authorization header: $auth" >&2; exit 1; }
+fi
+if [[ "${MOCK_MODE:-}" == "rate_limit" ]]; then
+    printf '{"message":"API rate limit exceeded","documentation_url":"https://docs.github.com"}\n'
+    exit 0
+fi
 header() {
     cat <<'HTML'
 <tr>
@@ -69,11 +94,28 @@ HTML
 EOF
 chmod +x "$tmp/bin/curl"
 
-result=$(PATH="$tmp/bin:$PATH" "$DIR/run.sh")
-jq -e '
-    map(.kernel_line) == ["6.1","6.12","6.18"] and
-    map(.kubernetes_version) == ["1.32","1.33","1.36"] and
-    .[1].kernel_version == "6.12.99-1.amzn2023"
-' <<<"$result" >/dev/null
+assert_matrix() {
+    jq -e '
+        map(.kernel_line) == ["6.1","6.12","6.18"] and
+        map(.kubernetes_version) == ["1.32","1.33","1.36"] and
+        .[1].kernel_version == "6.12.99-1.amzn2023"
+    ' <<<"$1" >/dev/null
+}
 
-echo "PASS: kernel matrix discovery"
+# Unauthenticated: no Authorization header may be sent.
+result=$(PATH="$tmp/bin:$PATH" GITHUB_TOKEN="" "$DIR/run.sh")
+assert_matrix "$result"
+echo "PASS: kernel matrix discovery (unauthenticated)"
+
+# Authenticated: the token must arrive as a Bearer Authorization header.
+result=$(PATH="$tmp/bin:$PATH" GITHUB_TOKEN=test-token MOCK_EXPECT_AUTH=1 "$DIR/run.sh")
+assert_matrix "$result"
+echo "PASS: kernel matrix discovery (authenticated)"
+
+# API error: discovery must fail and surface the API message.
+if err=$(PATH="$tmp/bin:$PATH" GITHUB_TOKEN="" MOCK_MODE=rate_limit "$DIR/run.sh" 2>&1); then
+    echo "FAIL: expected discovery to fail on API error" >&2; exit 1
+fi
+grep -q "API rate limit exceeded" <<<"$err" \
+    || { echo "FAIL: API error message not surfaced: $err" >&2; exit 1; }
+echo "PASS: API error surfaced"
