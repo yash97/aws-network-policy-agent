@@ -24,39 +24,36 @@ runs:
   steps:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-    - name: Prepare ECR repository and image metadata
+    - name: Set up ECR
+      id: ecr
+      uses: ./.github/actions/setup-ecr
+      with:
+        aws-region: ${{ inputs.aws-region }}
+    - name: Prepare image metadata
       id: prepare
       shell: bash
       env:
         REGION: ${{ inputs.aws-region }}
         ARCH: ${{ inputs.arch }}
         IMAGE_TAG_BASE: ${{ inputs.image-tag }}
-        AWS_ECR_REPO_NAME: amazon/aws-network-policy-agent
+        REPO_NAME: ${{ steps.ecr.outputs.repository }}
+        REPO_URI: ${{ steps.ecr.outputs.repo_uri }}
       run: |
         set -euo pipefail
-        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        AWS_ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
         IMAGE_TAG="${IMAGE_TAG_BASE}-${ARCH}"
 
-        aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$AWS_ECR_REGISTRY"
-        if ! aws ecr describe-repositories --registry-id "$AWS_ACCOUNT_ID" --repository-names "$AWS_ECR_REPO_NAME" >/dev/null 2>&1; then
-          echo "creating ECR repo with name $AWS_ECR_REPO_NAME"
-          # Tolerate losing the create race against the other arch's job.
-          aws ecr create-repository --repository-name "$AWS_ECR_REPO_NAME" || true
-        fi
-
-        if [[ $(aws ecr batch-get-image --repository-name="$AWS_ECR_REPO_NAME" --image-ids imageTag="$IMAGE_TAG" \
+        if [[ $(aws ecr batch-get-image --repository-name="$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" \
             --query 'images[].imageId.imageTag' --region "$REGION" --output json) != "[]" ]]; then
-          echo "Image $AWS_ECR_REPO_NAME:$IMAGE_TAG already exists. Skipping image build."
-          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "Image $REPO_NAME:$IMAGE_TAG already exists. Skipping image build."
+          echo "exists=true" >> "$GITHUB_OUTPUT"
         else
-          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "exists=false" >> "$GITHUB_OUTPUT"
         fi
 
         # Keep in sync with the GOLANG_IMAGE / BASE_IMAGE defaults in the Makefile.
-        echo "golang_image=public.ecr.aws/eks-distro-build-tooling/golang:$(cat .go-version)-gcc-al23" >> $GITHUB_OUTPUT
-        echo "base_image=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-glibc:latest-al23" >> $GITHUB_OUTPUT
-        echo "image_uri=$AWS_ECR_REGISTRY/$AWS_ECR_REPO_NAME:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "golang_image=public.ecr.aws/eks-distro-build-tooling/golang:$(cat .go-version)-gcc-al23" >> "$GITHUB_OUTPUT"
+        echo "base_image=public.ecr.aws/eks-distro-build-tooling/eks-distro-minimal-base-glibc:latest-al23" >> "$GITHUB_OUTPUT"
+        echo "image_uri=$REPO_URI:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
     - name: Build and Push Image
       # build-push-action (not raw `docker buildx build`) so the gha cache backend
       # receives its runtime token. provenance/sbom off so the per-arch tag stays a
