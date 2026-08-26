@@ -2,7 +2,11 @@
 
 `run.sh` discovers all Kubernetes versions in standard or extended EKS support,
 reads each latest AL2023 x86_64 standard AMI from public SSM parameters, and
-selects the lowest Kubernetes version for every unique kernel line.
+selects the lowest Kubernetes version for every unique kernel line. Kernel
+versions come from the `awslabs/amazon-eks-ami` release notes (fetched via the
+GitHub Releases API): no AWS API or docs page exposes per-AMI kernel versions —
+the [EKS docs](https://docs.aws.amazon.com/eks/latest/userguide/eks-linux-ami-versions.html)
+designate the GitHub release notes as the source for this information.
 
 ```bash
 AWS_REGION=us-west-2 ./scripts/smoke/eks-kernel-matrix/run.sh

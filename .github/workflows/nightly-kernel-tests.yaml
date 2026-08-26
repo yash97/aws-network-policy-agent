@@ -33,8 +33,13 @@ jobs:
           aws-region: ${{ env.REGION }}
       - id: matrix
         name: Discover kernel matrix
+        env:
+          # Authenticated GitHub API calls; unauthenticated requests from
+          # shared Actions runner IPs are frequently rate limited.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           matrix=$(./scripts/smoke/eks-kernel-matrix/run.sh | jq -c .)
+          jq . <<<"$matrix"
           [[ $(jq length <<<"$matrix") -gt 0 ]]
           echo "value=$matrix" >> "$GITHUB_OUTPUT"
 

@@ -2,13 +2,28 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-us-west-2}"
-RELEASE_URL="https://github.com/awslabs/amazon-eks-ami/releases/tag"
+# The EKS docs designate the amazon-eks-ami GitHub release notes as the only
+# source for per-AMI kernel versions (no AWS API exposes them; see
+# docs.aws.amazon.com/eks/latest/userguide/eks-linux-ami-versions.html).
+# Fetch the release body through the Releases API so we parse the
+# author-written markup rather than GitHub's rendered HTML. GITHUB_TOKEN is
+# optional but avoids unauthenticated rate limits on shared CI runner IPs.
+RELEASE_URL="https://api.github.com/repos/awslabs/amazon-eks-ami/releases/tags"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 for cmd in aws curl jq awk; do
     command -v "$cmd" >/dev/null || { echo "missing dependency: $cmd" >&2; exit 1; }
 done
+
+fetch_release_body() {
+    local tag="$1"
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$RELEASE_URL/$tag"
+    else
+        curl -fsSL "$RELEASE_URL/$tag"
+    fi | jq -er .body
+}
 
 kernel_from_release() {
     local file="$1" version="$2"
@@ -64,8 +79,8 @@ for version in "${versions[@]}"; do
     [[ "$image_name" =~ -v([0-9]{8})$ ]] || { echo "unexpected AMI name: $image_name" >&2; exit 1; }
 
     tag="v${BASH_REMATCH[1]}"
-    release="$tmp/$tag.html"
-    [[ -s "$release" ]] || curl -fsSL "$RELEASE_URL/$tag" -o "$release"
+    release="$tmp/$tag.body"
+    [[ -s "$release" ]] || fetch_release_body "$tag" >"$release"
     kernel=$(kernel_from_release "$release" "$version")
     [[ -n "$kernel" ]] || { echo "kernel not found for Kubernetes $version in $tag" >&2; exit 1; }
     kernel_line=$(cut -d. -f1,2 <<<"$kernel")

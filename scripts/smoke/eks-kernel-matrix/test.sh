@@ -36,10 +36,8 @@ chmod +x "$tmp/bin/aws"
 cat >"$tmp/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-while [[ $# -gt 0 ]]; do
-    [[ "$1" == "-o" ]] && { output="$2"; shift 2; continue; }
-    shift
-done
+# Mock of the GitHub Releases API: emits {"body": "<release notes markup>"}
+# on stdout, as consumed by fetch_release_body. All arguments are ignored.
 header() {
     cat <<'HTML'
 <tr>
@@ -67,7 +65,7 @@ HTML
     printf '<tr><td>kernel6.12</td>\n<td colspan="5">6.12.99-1.amzn2023</td>\n</tr>\n'
     echo '<summary><b>Kubernetes 1.32</b></summary>'; header
     printf '<tr><td>kernel</td>\n<td colspan="3">6.1.180-225.360.amzn2023</td>\n</tr>\n'
-} >"$output"
+} | jq -Rs '{body: .}'
 EOF
 chmod +x "$tmp/bin/curl"
 
