@@ -106,9 +106,14 @@ jobs:
 
       - name: Build and push image
         id: build
-        uses: ./.github/actions/build-and-push-image
+        # Native amd64 build only: the Cyclonus clusters use t3.large (x86_64)
+        # nodes, so the arm64 half and the multi-arch index are unnecessary.
+        # Dropping QEMU emulation cuts the build from ~12m to ~5m.
+        uses: ./.github/actions/build-and-push-image-per-arch
         with:
           aws-region: ${{ env.REGION }}
+          arch: amd64
+          image-tag: ${{ needs.check-trigger.outputs.pr-sha }}
 
   # One leg per IP family. Each leg creates its own cluster, runs the full
   # suite set, and posts a family-labeled results comment. fail-fast: false so

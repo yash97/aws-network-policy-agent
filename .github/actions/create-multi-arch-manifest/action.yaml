@@ -1,19 +1,16 @@
 name: Create Multi-Arch Manifest
 description: >-
-  Creates and pushes a multi-arch image index from per-arch images. The caller
+  Creates and pushes a multi-arch image index referencing the per-arch images
+  that build-and-push-image-per-arch produced for the same base tag. The caller
   must configure AWS credentials before using this action.
 inputs:
   aws-region:
     description: AWS region
     required: true
-  image-uri-amd64:
-    description: 'AMD64 image URI'
-    required: true
-  image-uri-arm64:
-    description: 'ARM64 image URI'
-    required: true
   image-tag:
-    description: 'Tag for the multi-arch index (same base tag the per-arch images were built with)'
+    description: >-
+      Base image tag the per-arch images were built with; the index is pushed
+      under this tag and references the <tag>-amd64 and <tag>-arm64 images.
     required: true
 outputs:
   manifest_uri:
@@ -29,20 +26,18 @@ runs:
       shell: bash
       env:
         REGION: ${{ inputs.aws-region }}
-        IMAGE_AMD64: ${{ inputs.image-uri-amd64 }}
-        IMAGE_ARM64: ${{ inputs.image-uri-arm64 }}
         IMAGE_TAG: ${{ inputs.image-tag }}
         AWS_ECR_REPO_NAME: amazon/aws-network-policy-agent
       run: |
         set -euo pipefail
         AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         AWS_ECR_REGISTRY="$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-        MANIFEST_URI="$AWS_ECR_REGISTRY/$AWS_ECR_REPO_NAME:$IMAGE_TAG"
+        IMAGE_BASE="$AWS_ECR_REGISTRY/$AWS_ECR_REPO_NAME:$IMAGE_TAG"
 
         aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$AWS_ECR_REGISTRY"
 
         # imagetools resolves per-arch manifests via the registry and handles OCI
         # media types correctly, unlike legacy `docker manifest create`.
-        docker buildx imagetools create -t "$MANIFEST_URI" "$IMAGE_AMD64" "$IMAGE_ARM64"
+        docker buildx imagetools create -t "$IMAGE_BASE" "$IMAGE_BASE-amd64" "$IMAGE_BASE-arm64"
 
-        echo "manifest_uri=$MANIFEST_URI" >> $GITHUB_OUTPUT
+        echo "manifest_uri=$IMAGE_BASE" >> "$GITHUB_OUTPUT"
