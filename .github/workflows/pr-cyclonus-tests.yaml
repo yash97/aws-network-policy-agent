@@ -98,6 +98,17 @@ jobs:
         with:
           ref: ${{ needs.check-trigger.outputs.pr-sha }}
 
+      # PRs opened before these actions merged check out a head that predates
+      # them; fall back to the default-branch copies so /test cyclonus keeps
+      # working on those PRs without a rebase. Only CI plumbing comes from the
+      # default branch; the image is still built from the PR's source.
+      - name: Ensure image build actions
+        run: |
+          if [[ ! -f .github/actions/build-and-push-image-per-arch/action.yaml ]]; then
+            git fetch --depth=1 origin "${{ github.event.repository.default_branch }}"
+            git checkout FETCH_HEAD -- .github/actions/build-and-push-image-per-arch .github/actions/setup-ecr
+          fi
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.OSS_ROLE_ARN }}
@@ -114,6 +125,9 @@ jobs:
           aws-region: ${{ env.REGION }}
           arch: amd64
           image-tag: ${{ needs.check-trigger.outputs.pr-sha }}
+          # Isolated cache scope: this builds PR-authored code, and its cached
+          # layers must never be imported by the trusted scheduled builds.
+          cache-scope: pr-amd64
 
   # One leg per IP family. Each leg creates its own cluster, runs the full
   # suite set, and posts a family-labeled results comment. fail-fast: false so

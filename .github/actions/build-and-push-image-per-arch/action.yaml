@@ -15,6 +15,13 @@ inputs:
       Base image tag; the arch suffix is appended. Pass the same value to
       create-multi-arch-manifest so per-arch tags and the index tag agree.
     required: true
+  cache-scope:
+    description: >-
+      Scope for the gha layer cache; defaults to the arch. Callers building
+      PR-authored code should pass a distinct scope so trusted scheduled
+      builds never import layers it cached.
+    required: false
+    default: ''
 outputs:
   image_uri:
     description: "Architecture-specific image URI"
@@ -42,8 +49,12 @@ runs:
         set -euo pipefail
         IMAGE_TAG="${IMAGE_TAG_BASE}-${ARCH}"
 
-        if [[ $(aws ecr batch-get-image --repository-name="$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" \
-            --query 'images[].imageId.imageTag' --region "$REGION" --output json) != "[]" ]]; then
+        # Assignment first so a batch-get-image failure aborts the step
+        # (inside [[ ]] a failed substitution would read as "image exists"
+        # and silently skip the build).
+        existing=$(aws ecr batch-get-image --repository-name="$REPO_NAME" --image-ids imageTag="$IMAGE_TAG" \
+            --query 'images[].imageId.imageTag' --region "$REGION" --output json)
+        if [[ "$existing" != "[]" ]]; then
           echo "Image $REPO_NAME:$IMAGE_TAG already exists. Skipping image build."
           echo "exists=true" >> "$GITHUB_OUTPUT"
         else
@@ -68,8 +79,8 @@ runs:
         push: true
         provenance: false
         sbom: false
-        cache-from: type=gha,scope=${{ inputs.arch }}
-        cache-to: type=gha,mode=max,scope=${{ inputs.arch }}
+        cache-from: type=gha,scope=${{ inputs.cache-scope || inputs.arch }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope || inputs.arch }}
         build-args: |
           golang_image=${{ steps.prepare.outputs.golang_image }}
           base_image=${{ steps.prepare.outputs.base_image }}
