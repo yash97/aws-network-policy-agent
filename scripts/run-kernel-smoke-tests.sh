@@ -17,7 +17,7 @@ set -euoE pipefail
 DIR=$(cd "$(dirname "$0")"; pwd)
 GINKGO_TEST_BUILD_DIR="$DIR/../test/build"
 
-source ${DIR}/lib/ginkgo-suites.sh
+source "${DIR}/lib/tests.sh"
 
 : "${IP_FAMILY:="IPv4"}"
 : "${REGION:="us-west-2"}"
