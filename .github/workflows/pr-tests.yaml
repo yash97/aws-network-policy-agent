@@ -13,6 +13,32 @@ permissions:
   contents: read
 
 jobs:
+  lint-ci:
+    if: github.event_name == 'pull_request'
+    name: Lint workflows and CI scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+      - name: actionlint
+        # Pre-existing workflows still reference older action versions, so the
+        # runner-version rule is ignored; everything else (expressions, needs
+        # cycles, matrix and syntax errors) gates the PR.
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color -ignore 'the runner of ".+" action is too old'
+      - name: shellcheck kernel test scripts
+        # Scoped to the scripts introduced with the nightly kernel tests; the
+        # older scripts carry pre-existing findings and are excluded until
+        # cleaned up separately. shellcheck is preinstalled on ubuntu runners.
+        run: |
+          shellcheck -S warning \
+            scripts/eks-test-cluster.sh \
+            scripts/run-kernel-smoke-tests.sh \
+            scripts/smoke/eks-kernel-matrix/run.sh \
+            scripts/smoke/eks-kernel-matrix/test.sh
+      - name: kernel matrix discovery offline test
+        run: ./scripts/smoke/eks-kernel-matrix/test.sh
+
   unit-test:
     name: Unit test
     runs-on: ubuntu-latest
