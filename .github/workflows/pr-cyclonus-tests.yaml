@@ -210,18 +210,10 @@ jobs:
     env:
       CLUSTER_NAME: cyclonus-pr-${{ github.event.issue.number }}-${{ matrix.ip-family }}
     steps:
-      # The PR head has the script while this change is itself in review;
-      # the fallback covers older PRs whose head predates it.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.check-trigger.outputs.pr-sha }}
-
-      - name: Ensure cluster lifecycle script
-        run: |
-          if [[ ! -f scripts/eks-test-cluster.sh ]]; then
-            git fetch --depth=1 origin "${{ github.event.repository.default_branch }}"
-            git checkout FETCH_HEAD -- scripts/eks-test-cluster.sh
-          fi
+          # Pin cleanup to the trusted commit that supplied this workflow.
+          ref: ${{ github.workflow_sha }}
 
       # Deletion needs only eksctl (aws CLI is preinstalled on runners).
       # Deliberately not the install-dependencies composite: cleanup is the
