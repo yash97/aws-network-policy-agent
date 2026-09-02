@@ -19,6 +19,7 @@
 
 set -euoE pipefail
 DIR=$(cd "$(dirname "$0")"; pwd)
+# shellcheck disable=SC2034  # consumed by run_ginkgo_suite in lib/tests.sh
 GINKGO_TEST_BUILD_DIR="$DIR/../test/build"
 
 source "${DIR}/lib/cleanup.sh"

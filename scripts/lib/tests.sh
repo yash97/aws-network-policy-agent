@@ -1,3 +1,8 @@
+# shellcheck shell=bash
+# Sourced library: test orchestration helpers shared by run-tests.sh,
+# run-cyclonus-tests.sh and run-kernel-smoke-tests.sh.
+# shellcheck disable=SC2034  # TEST_FAILED is declared and read by the callers
+
 function generate_manifest_and_apply(){
 
     # Use Upstream images by default
